@@ -3,20 +3,25 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 import aio_pika
+import psycopg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from psycopg.rows import dict_row
 
 APP_INSTANCE = os.getenv("APP_INSTANCE", "products-service")
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = Path(
-    os.getenv("PRODUCTS_DB_PATH", str(BASE_DIR / f"{APP_INSTANCE.replace('-', '_')}.db"))
+DEFAULT_PRODUCTS_DATABASE_URL = (
+    "postgresql://neondb_owner:npg_BQ1YKd6tLCNo@"
+    "ep-raspy-silence-ap9menkm.c-7.us-east-1.aws.neon.tech/"
+    "neondb?sslmode=require"
+)
+PRODUCTS_DATABASE_URL = os.getenv(
+    "PRODUCTS_DATABASE_URL",
+    os.getenv("PRODUCTS_DB_PATH", DEFAULT_PRODUCTS_DATABASE_URL),
 )
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 USERS_RPC_QUEUE = os.getenv("USERS_RPC_QUEUE", "users.rpc")
@@ -28,29 +33,47 @@ class ProductCreate(BaseModel):
     owner_user_id: int
 
 
-def get_connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH, check_same_thread=False)
-    connection.row_factory = sqlite3.Row
-    return connection
+def get_connection() -> psycopg.Connection:
+    return psycopg.connect(PRODUCTS_DATABASE_URL, row_factory=dict_row)
 
 
-def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with get_connection() as connection:
-        connection.execute(
+def init_db(connection: psycopg.Connection) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                price REAL NOT NULL,
-                owner_user_id INTEGER NOT NULL
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                price DOUBLE PRECISION NOT NULL,
+                owner_user_id BIGINT NOT NULL
             )
             """
         )
-        connection.commit()
 
 
-def serialize_product(row: sqlite3.Row) -> dict[str, Any]:
+def bootstrap_database() -> None:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_lock(%s)", (20260509,))
+            try:
+                init_db(connection)
+                cursor.executemany(
+                    """
+                    INSERT INTO products (name, price, owner_user_id)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (name) DO NOTHING
+                    """,
+                    [
+                        ("Laptop Stand", 49.90, 1),
+                        ("Gaming Mouse", 79.50, 2),
+                        ("USB-C Hub", 39.99, 1),
+                    ],
+                )
+            finally:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", (20260509,))
+
+
+def serialize_product(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "name": row["name"],
@@ -62,18 +85,26 @@ def serialize_product(row: sqlite3.Row) -> dict[str, Any]:
 
 def list_products() -> list[dict[str, Any]]:
     with get_connection() as connection:
-        rows = connection.execute(
-            "SELECT id, name, price, owner_user_id FROM products ORDER BY id"
-        ).fetchall()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, name, price, owner_user_id FROM products ORDER BY id"
+            )
+            rows = cursor.fetchall()
     return [serialize_product(row) for row in rows]
 
 
 def get_product_by_id(product_id: int) -> dict[str, Any] | None:
     with get_connection() as connection:
-        row = connection.execute(
-            "SELECT id, name, price, owner_user_id FROM products WHERE id = ?",
-            (product_id,),
-        ).fetchone()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, name, price, owner_user_id
+                FROM products
+                WHERE id = %s
+                """,
+                (product_id,),
+            )
+            row = cursor.fetchone()
     if row is None:
         return None
     return serialize_product(row)
@@ -81,13 +112,21 @@ def get_product_by_id(product_id: int) -> dict[str, Any] | None:
 
 def create_product_in_db(name: str, price: float, owner_user_id: int) -> dict[str, Any]:
     with get_connection() as connection:
-        cursor = connection.execute(
-            "INSERT INTO products (name, price, owner_user_id) VALUES (?, ?, ?)",
-            (name, price, owner_user_id),
-        )
-        connection.commit()
-        product_id = int(cursor.lastrowid)
-    product = get_product_by_id(product_id)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO products (name, price, owner_user_id)
+                VALUES (%s, %s, %s)
+                RETURNING id
+                """,
+                (name, price, owner_user_id),
+            )
+            created = cursor.fetchone()
+
+    if created is None:
+        raise RuntimeError("Product was created but could not be loaded")
+
+    product = get_product_by_id(int(created["id"]))
     if product is None:
         raise RuntimeError("Product was created but could not be loaded")
     return product
@@ -100,17 +139,18 @@ def ensure_demo_products() -> int:
         ("USB-C Hub", 39.99, 1),
     ]
     with get_connection() as connection:
-        existing_count = connection.execute(
-            "SELECT COUNT(*) FROM products"
-        ).fetchone()[0]
-        if existing_count == 0:
-            connection.executemany(
-                "INSERT INTO products (name, price, owner_user_id) VALUES (?, ?, ?)",
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO products (name, price, owner_user_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (name) DO NOTHING
+                """,
                 demo_products,
             )
-            connection.commit()
-        total = connection.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-    return int(total)
+            cursor.execute("SELECT COUNT(*) AS total FROM products")
+            total_row = cursor.fetchone()
+    return int(total_row["total"]) if total_row is not None else 0
 
 
 class UserRpcClient:
@@ -229,8 +269,7 @@ async def fetch_owner_or_raise(rpc_client: UserRpcClient, owner_user_id: int) ->
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
-    ensure_demo_products()
+    bootstrap_database()
 
     user_rpc = UserRpcClient(RABBITMQ_URL, USERS_RPC_QUEUE)
     await user_rpc.connect_with_retry()
@@ -241,7 +280,7 @@ async def lifespan(app: FastAPI):
     await user_rpc.close()
 
 
-app = FastAPI(title="Products Service", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Products Service", version="1.0.0", lifespan=lifespan, root_path="/products")
 
 
 @app.get("/")
@@ -262,6 +301,7 @@ def health() -> dict[str, Any]:
         "instance": APP_INSTANCE,
         "rabbitmq_connected": user_rpc.is_connected,
         "users_rpc_queue": USERS_RPC_QUEUE,
+        "database_mode": "postgresql",
     }
 
 
@@ -288,7 +328,14 @@ async def get_product(product_id: int) -> dict[str, Any]:
 async def create_product(payload: ProductCreate) -> dict[str, Any]:
     user_rpc: UserRpcClient = app.state.user_rpc
     owner = await fetch_owner_or_raise(user_rpc, payload.owner_user_id)
-    product = create_product_in_db(payload.name, payload.price, payload.owner_user_id)
+    try:
+        product = create_product_in_db(payload.name, payload.price, payload.owner_user_id)
+    except psycopg.IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Product with this name already exists",
+        ) from exc
+
     return {
         **product,
         "owner": owner,
@@ -299,7 +346,7 @@ async def create_product(payload: ProductCreate) -> dict[str, Any]:
 def seed_demo() -> dict[str, Any]:
     total = ensure_demo_products()
     return {
-        "message": "Demo products are ready on this instance",
+        "message": "Demo products are ready in PostgreSQL",
         "instance": APP_INSTANCE,
         "total_products": total,
         "products": list_products(),

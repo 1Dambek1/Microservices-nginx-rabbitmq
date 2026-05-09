@@ -5,6 +5,12 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
 
   users_service:
     image: project2_users_service:latest
@@ -20,8 +26,15 @@ services:
     ports:
       - "8001:8001"
     depends_on:
-      - rabbitmq
-
+      rabbitmq:
+        condition: service_healthy
+  start_service:
+    image: project2_start_service:latest
+    build:
+      context: ./start_service
+    container_name: project2_start_service
+    ports:
+      - "8000:8000"
   products_service_1:
     image: project2_products_service:latest
     build:
@@ -29,28 +42,28 @@ services:
     container_name: project2_products_service_1
     environment:
       APP_INSTANCE: products-service-1
-      PRODUCTS_DB_PATH: /data/products.db
+      PRODUCTS_DATABASE_URL: postgresql://neondb_owner:npg_BQ1YKd6tLCNo@ep-raspy-silence-ap9menkm.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       USERS_RPC_QUEUE: users.rpc
-    volumes:
-      - products_1_data:/data
     depends_on:
-      - rabbitmq
-      - users_service
+      rabbitmq:
+        condition: service_healthy
+      users_service:
+        condition: service_started
 
   products_service_2:
     image: project2_products_service:latest
     container_name: project2_products_service_2
     environment:
       APP_INSTANCE: products-service-2
-      PRODUCTS_DB_PATH: /data/products.db
+      PRODUCTS_DATABASE_URL: postgresql://neondb_owner:npg_BQ1YKd6tLCNo@ep-raspy-silence-ap9menkm.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       USERS_RPC_QUEUE: users.rpc
-    volumes:
-      - products_2_data:/data
     depends_on:
-      - rabbitmq
-      - users_service
+      rabbitmq:
+        condition: service_healthy
+      users_service:
+        condition: service_started
 
   nginx:
     image: nginx:1.27-alpine
@@ -62,8 +75,8 @@ services:
     depends_on:
       - products_service_1
       - products_service_2
+      - users_service
+      - start_service
 
 volumes:
   users_data:
-  products_1_data:
-  products_2_data:

@@ -105,7 +105,10 @@ def ensure_demo_users() -> int:
     return int(total)
 
 
-async def handle_rpc_message(message: aio_pika.IncomingMessage) -> None:
+async def handle_rpc_message(
+    message: aio_pika.IncomingMessage,
+    exchange: aio_pika.abc.AbstractExchange,
+) -> None:
     async with message.process(requeue=False):
         response: dict[str, Any]
         try:
@@ -130,7 +133,7 @@ async def handle_rpc_message(message: aio_pika.IncomingMessage) -> None:
                 correlation_id=message.correlation_id,
                 content_type="application/json",
             )
-            await message.channel.default_exchange.publish(
+            await exchange.publish(
                 reply,
                 routing_key=message.reply_to,
             )
@@ -147,7 +150,9 @@ async def consume_user_rpc(app: FastAPI) -> None:
                 channel = await connection.channel()
                 await channel.set_qos(prefetch_count=10)
                 queue = await channel.declare_queue(USERS_RPC_QUEUE, durable=True)
-                await queue.consume(handle_rpc_message)
+                await queue.consume(
+                    lambda message: handle_rpc_message(message, channel.default_exchange)
+                )
 
                 await asyncio.Future()
             except asyncio.CancelledError:
@@ -179,7 +184,7 @@ async def lifespan(app: FastAPI):
         await rpc_task
 
 
-app = FastAPI(title="Users Service", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Users Service", version="1.0.0", lifespan=lifespan,root_path="/users")
 
 
 @app.get("/")
