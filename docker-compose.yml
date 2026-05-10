@@ -88,7 +88,7 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
       - "80:80"
     healthcheck:
@@ -97,15 +97,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    depends_on:
-      products_service_1:
-        condition: service_healthy
-      products_service_2:
-        condition: service_healthy
-      users_service:
-        condition: service_healthy
-      start_service:
-        condition: service_healthy
 
 volumes:
   users_data:
