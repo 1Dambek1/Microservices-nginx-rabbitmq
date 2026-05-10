@@ -14,17 +14,14 @@ from pydantic import BaseModel
 from psycopg.rows import dict_row
 
 APP_INSTANCE = os.getenv("APP_INSTANCE", "products-service")
-DEFAULT_PRODUCTS_DATABASE_URL = (
-    "postgresql://neondb_owner:npg_BQ1YKd6tLCNo@"
-    "ep-raspy-silence-ap9menkm.c-7.us-east-1.aws.neon.tech/"
-    "neondb?sslmode=require"
-)
-PRODUCTS_DATABASE_URL = os.getenv(
-    "PRODUCTS_DATABASE_URL",
-    os.getenv("PRODUCTS_DB_PATH", DEFAULT_PRODUCTS_DATABASE_URL),
-)
+ROOT_PATH = os.getenv("ROOT_PATH", "/products")
+SEED_DEMO_DATA = os.getenv("SEED_DEMO_DATA", "false").lower() == "true"
+PRODUCTS_DATABASE_URL = os.getenv("PRODUCTS_DATABASE_URL", "").strip()
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 USERS_RPC_QUEUE = os.getenv("USERS_RPC_QUEUE", "users.rpc")
+
+if not PRODUCTS_DATABASE_URL:
+    raise RuntimeError("PRODUCTS_DATABASE_URL is required")
 
 
 class ProductCreate(BaseModel):
@@ -57,18 +54,19 @@ def bootstrap_database() -> None:
             cursor.execute("SELECT pg_advisory_lock(%s)", (20260509,))
             try:
                 init_db(connection)
-                cursor.executemany(
-                    """
-                    INSERT INTO products (name, price, owner_user_id)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (name) DO NOTHING
-                    """,
-                    [
-                        ("Laptop Stand", 49.90, 1),
-                        ("Gaming Mouse", 79.50, 2),
-                        ("USB-C Hub", 39.99, 1),
-                    ],
-                )
+                if SEED_DEMO_DATA:
+                    cursor.executemany(
+                        """
+                        INSERT INTO products (name, price, owner_user_id)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (name) DO NOTHING
+                        """,
+                        [
+                            ("Laptop Stand", 49.90, 1),
+                            ("Gaming Mouse", 79.50, 2),
+                            ("USB-C Hub", 39.99, 1),
+                        ],
+                    )
             finally:
                 cursor.execute("SELECT pg_advisory_unlock(%s)", (20260509,))
 
@@ -280,7 +278,7 @@ async def lifespan(app: FastAPI):
     await user_rpc.close()
 
 
-app = FastAPI(title="Products Service", version="1.0.0", lifespan=lifespan, root_path="/products")
+app = FastAPI(title="Products Service", version="1.0.0", lifespan=lifespan, root_path=ROOT_PATH)
 
 
 @app.get("/")

@@ -16,6 +16,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.getenv("USERS_DB_PATH", str(BASE_DIR / "users.db")))
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 USERS_RPC_QUEUE = os.getenv("USERS_RPC_QUEUE", "users.rpc")
+ROOT_PATH = os.getenv("ROOT_PATH", "/users")
+SEED_DEMO_DATA = os.getenv("SEED_DEMO_DATA", "false").lower() == "true"
 
 
 class UserCreate(BaseModel):
@@ -171,7 +173,8 @@ async def consume_user_rpc(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    ensure_demo_users()
+    if SEED_DEMO_DATA:
+        ensure_demo_users()
 
     rpc_task = asyncio.create_task(consume_user_rpc(app))
     app.state.rpc_task = rpc_task
@@ -184,7 +187,7 @@ async def lifespan(app: FastAPI):
         await rpc_task
 
 
-app = FastAPI(title="Users Service", version="1.0.0", lifespan=lifespan,root_path="/users")
+app = FastAPI(title="Users Service", version="1.0.0", lifespan=lifespan, root_path=ROOT_PATH)
 
 
 @app.get("/")

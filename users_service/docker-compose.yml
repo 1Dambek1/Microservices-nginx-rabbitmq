@@ -1,0 +1,20 @@
+services:
+  users_service:
+    image: project2_users_service:latest
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      USERS_DB_PATH: ${USERS_DB_PATH:-/data/users.db}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      USERS_RPC_QUEUE: ${USERS_RPC_QUEUE:-users.rpc}
+      ROOT_PATH: /users
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+    volumes:
+      - users_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+

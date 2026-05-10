@@ -1,0 +1,19 @@
+services:
+ products_service:
+    image: project2_products_service:latest
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      APP_INSTANCE: products-service-1
+      PRODUCTS_DATABASE_URL: ${PRODUCTS_DATABASE_URL}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      USERS_RPC_QUEUE: ${USERS_RPC_QUEUE:-users.rpc}
+      ROOT_PATH: /products
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

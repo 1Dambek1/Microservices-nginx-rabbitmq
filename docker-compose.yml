@@ -1,10 +1,12 @@
 services:
   rabbitmq:
     image: rabbitmq:3.13-management
-    container_name: project2_rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:15672:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
@@ -16,67 +18,94 @@ services:
     image: project2_users_service:latest
     build:
       context: ./users_service
-    container_name: project2_users_service
+    restart: unless-stopped
     environment:
-      USERS_DB_PATH: /data/users.db
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      USERS_RPC_QUEUE: users.rpc
+      USERS_DB_PATH: ${USERS_DB_PATH:-/data/users.db}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      USERS_RPC_QUEUE: ${USERS_RPC_QUEUE:-users.rpc}
+      ROOT_PATH: /users
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
     volumes:
       - users_data:/data
-    ports:
-      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       rabbitmq:
         condition: service_healthy
-  start_service:
-    image: project2_start_service:latest
-    build:
-      context: ./start_service
-    container_name: project2_start_service
-    ports:
-      - "8000:8000"
+
+
   products_service_1:
     image: project2_products_service:latest
     build:
       context: ./products_service
-    container_name: project2_products_service_1
+    restart: unless-stopped
     environment:
       APP_INSTANCE: products-service-1
-      PRODUCTS_DATABASE_URL: postgresql://neondb_owner:npg_BQ1YKd6tLCNo@ep-raspy-silence-ap9menkm.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      USERS_RPC_QUEUE: users.rpc
+      PRODUCTS_DATABASE_URL: ${PRODUCTS_DATABASE_URL}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      USERS_RPC_QUEUE: ${USERS_RPC_QUEUE:-users.rpc}
+      ROOT_PATH: /products
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       rabbitmq:
         condition: service_healthy
       users_service:
-        condition: service_started
+        condition: service_healthy
 
   products_service_2:
     image: project2_products_service:latest
-    container_name: project2_products_service_2
+    restart: unless-stopped
     environment:
       APP_INSTANCE: products-service-2
-      PRODUCTS_DATABASE_URL: postgresql://neondb_owner:npg_BQ1YKd6tLCNo@ep-raspy-silence-ap9menkm.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      USERS_RPC_QUEUE: users.rpc
+      PRODUCTS_DATABASE_URL: ${PRODUCTS_DATABASE_URL}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      USERS_RPC_QUEUE: ${USERS_RPC_QUEUE:-users.rpc}
+      ROOT_PATH: /products
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       rabbitmq:
         condition: service_healthy
       users_service:
-        condition: service_started
+        condition: service_healthy
 
   nginx:
     image: nginx:1.27-alpine
-    container_name: project2_nginx
+    restart: unless-stopped
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "8080:8080"
+      - "80:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      - products_service_1
-      - products_service_2
-      - users_service
-      - start_service
+      products_service_1:
+        condition: service_healthy
+      products_service_2:
+        condition: service_healthy
+      users_service:
+        condition: service_healthy
+      start_service:
+        condition: service_healthy
 
 volumes:
   users_data:
